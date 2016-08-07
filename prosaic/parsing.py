@@ -49,10 +49,25 @@ from prosaic.models import Phrase, Source, Corpus, Session, Database, get_sessio
 
 CHUNK_SIZE = 10000
 
-BAD_CHARS = ["(", ")", "{", "}", "[", "]", '`', '"', "\n",
-             '“', '”', '«', '»', "'", '\\', '_']
-CLAUSE_MARKERS = [',', ';', ':']
-SENTENCE_MARKERS = ['?', '.', '!']
+BAD_CHARS = {'(': True,
+             ')': True,
+             '{': True,
+             '}': True,
+             '[': True,
+             ']': True,
+             '`': True,
+             "'": True,
+             '"': True,
+             '\n': True,
+             '“': True,
+             '”': True,
+             '«': True,
+             '»': True,
+             "'": True,
+             '\\': True,
+             '_': True,}
+CLAUSE_MARKERS = {',':True, ';':True, ':':True}
+SENTENCE_MARKERS = {'?':True, '.':True, '!':True}
 # TODO random, magic number
 LONG_ENOUGH = 20
 
@@ -88,12 +103,12 @@ def process_text_stream(source: Source, text: TextIOBase) -> None:
         while len(chunk) > 0:
             line_buff = ""
             for c in chunk:
-                if c in BAD_CHARS:
+                if BAD_CHARS.get(c, False):
                     print('skipping bad character')
                     if not line_buff.endswith(" "):
                         line_buff += ' '
                     continue
-                if c in CLAUSE_MARKERS:
+                if CLAUSE_MARKERS.get(c, False):
                     if len(line_buff) > LONG_ENOUGH:
                         ultimate_text += line_buff
                         print('found clause, submitting')
@@ -104,7 +119,7 @@ def process_text_stream(source: Source, text: TextIOBase) -> None:
                     else:
                         line_buff += c
                     continue
-                if c in SENTENCE_MARKERS:
+                if SENTENCE_MARKERS.get(c, False):
                     if len(line_buff) > LONG_ENOUGH:
                         ultimate_text += line_buff
                         print('found sentence, submitting')
