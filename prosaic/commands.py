@@ -24,7 +24,7 @@ import sys
 from sqlalchemy import text
 
 from prosaic.models import Source, Corpus, get_session, get_engine, Database
-from prosaic.parsing import process_text
+from prosaic.parsing import process_text_stream
 from prosaic.generation import poem_from_template
 import prosaic.cfg as cfg
 from prosaic.util import slurp, first
@@ -194,16 +194,18 @@ class ProsaicArgParser(ArgumentParser):
     def source_new(self):
         # TODO slurpin's bad; would be better to fully pipeline parsing from
         # file -> processing -> db, with threading.
-        text = slurp(self.args.path)
+        #text = slurp(self.args.path)
+        text_file = open(self.args.path, 'r')
         name = self.args.source_name
         description = self.args.source_description
         source = Source(name=name, description=description)
         session = get_session(self.db)
+        # TODO session gets closed in process_text, messy
         session.add(source)
 
-        process_text(source, text)
-
-        session.commit()
+        # TODO db
+        process_text_stream(source, text_file)
+        text_file.close()
 
     def poem_new(self):
         session = get_session(self.db)

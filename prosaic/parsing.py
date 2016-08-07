@@ -13,10 +13,122 @@
 
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from io import TextIOBase
 import logging
 import re
+
+import prosaic.cfg as cfg # TODO
 import prosaic.nlp as nlp
-from prosaic.models import Phrase, Source, Corpus, Session
+from prosaic.models import Phrase, Source, Corpus, Session, Database, get_session # TODO
+
+# ultimately, i want parsing to be as fast as possible so it can be reliably
+# done online. it's painfully slow now and i want to try speeding this up
+# before i start stressing about adding a job queue system or messing with
+# websocket interfaces.
+
+# it is probably going to be fastest to try and have as few runs over the data
+# as possible. currently, there's a big regular expression pass, an nltk pass
+# for sentences, then for each sentence, more passes for clause detection and
+# cleanup.
+
+# i'm currently wondering how feasible it is to do a finite state automata that
+# cleans up bad characters as it goes and picks out clauses to put in the db.
+
+# the process would look something like:
+
+# stream book in chunks
+# for each chunk, move character by character while in RAM
+# if ok character or not clause or sentence marker, add to line buffer
+# remove a bad character and skip
+# if potential clause, check current line buffer length
+# if line buffer seems full enough (ie a long enough line), submit to save pool
+# if not, add to buffer
+# if sentence marker, ensure buffer seems full enough and submit to save pool
+# if not, wipe buffer
+
+CHUNK_SIZE = 10000
+
+BAD_CHARS = ["(", ")", "{", "}", "[", "]", '`', '"', "\n",
+             '“', '”', '«', '»', "'", '\\', '_']
+CLAUSE_MARKERS = [',', ';', ':']
+SENTENCE_MARKERS = ['?', '.', '!']
+# TODO random, magic number
+LONG_ENOUGH = 20
+
+def process_line(source_id: int, line_no: int, line: str) -> None:
+    session = get_session(Database(**cfg.DEFAULT_DB))
+    source = session.query(Source).filter(Source.id == source_id).one()
+
+    stems = nlp.stem_sentence(line)
+    rhyme_sound = nlp.rhyme_sound(line)
+    syllables = nlp.count_syllables(line)
+    alliteration = nlp.has_alliteration(line)
+
+    phrase = Phrase(stems=stems, raw=line, alliteration=alliteration,
+                    rhyme_sound=rhyme_sound,
+                    syllables=syllables, line_no=line_no, source=source)
+
+    session.add(phrase)
+    session.commit()
+
+def process_text_stream(source: Source, text: TextIOBase) -> None:
+    session = Session.object_session(source)
+    line_no = 0
+    ultimate_text = ''
+    futures = []
+    source.content = ''
+    session.add(source)
+    session.commit() # so we can attach phrases to it. we'll commit again later.
+
+    print('initializing pool')
+    with ProcessPoolExecutor() as pool:
+        print('reading chunk')
+        chunk = text.read(CHUNK_SIZE)
+        while len(chunk) > 0:
+            line_buff = ""
+            for c in chunk:
+                if c in BAD_CHARS:
+                    print('skipping bad character')
+                    if not line_buff.endswith(" "):
+                        line_buff += ' '
+                    continue
+                if c in CLAUSE_MARKERS:
+                    if len(line_buff) > LONG_ENOUGH:
+                        ultimate_text += line_buff
+                        print('found clause, submitting')
+                        print(line_buff)
+                        futures.append(pool.submit(process_line, source.id, line_no, line_buff))
+                        line_no += 1
+                        line_buff = ""
+                    else:
+                        line_buff += c
+                    continue
+                if c in SENTENCE_MARKERS:
+                    if len(line_buff) > LONG_ENOUGH:
+                        ultimate_text += line_buff
+                        print('found sentence, submitting')
+                        print(line_buff)
+                        futures.append(pool.submit(process_line, source.id, line_no, line_buff))
+                        line_no += 1
+                    line_buff = ""
+                    continue
+                line_buff += c
+            print('reading chunk')
+            chunk = text.read(CHUNK_SIZE)
+
+        print('waiting on futures')
+        for fut in as_completed(futures):
+            if fut.exception() is not None:
+                # TODO if error, cancel all futures and delete source.
+                print('raising exception')
+                raise fut.exception()
+
+    print('process pool done, saving source')
+    source.content = ultimate_text
+    session.add(source)
+    session.commit()
+    session.close()
 
 log = logging.getLogger('prosaic')
 
@@ -65,8 +177,8 @@ def process_text(source: Source, raw_text: str) -> None:
     log.debug('extracting sentences')
     sentences = nlp.sentences(text)
 
-    log.debug("expanding clauses...")
-    sentences = nlp.expand_multiclauses(sentences)
+    # log.debug("expanding clauses...")
+    # sentences = nlp.expand_multiclauses(sentences)
 
     log.debug("pre-processing, parsing and saving sentences...")
     for x in range(0, len(sentences)):
